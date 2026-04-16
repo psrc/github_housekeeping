@@ -1,0 +1,11 @@
+org: "psrc"
+lookback_months: 18
+excluded_users:
+  - "dependabot[bot]"
+  - "github-actions[bot]"
+min_contribution_threshold: 0.3
+require_org_membership: true
+ignored_activity_paths:
+  - ".github/CODEOWNERS"
+ignored_activity_title_patterns:
+  - "(?i)codeowners"
