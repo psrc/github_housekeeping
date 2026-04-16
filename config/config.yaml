@@ -1,5 +1,5 @@
 org: "psrc"
-lookback_months: 18
+lookback_months: 24
 excluded_users:
   - "dependabot[bot]"
   - "github-actions[bot]"
