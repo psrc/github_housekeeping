@@ -5,7 +5,7 @@ This repository runs an organization-wide GitHub governance scan on a schedule u
 The automation performs two checks across repositories in a GitHub organization:
 
 1. For repositories without `.github/CODEOWNERS`, it inspects recent commit history and creates a CODEOWNERS file for the top recent contributor.
-2. For repositories with `.github/CODEOWNERS`, it checks for inactivity over the configured lookback window and opens an issue tagging the CODEOWNERS when the repository appears inactive.
+2. For repositories with `.github/CODEOWNERS`, it checks for inactivity over the configured lookback window and opens an issue tagging the CODEOWNERS when the repository appears inactive. Individual CODEOWNERS users are also assigned to the issue when GitHub allows assignment for that repository.
 
 ## Repository Layout
 
@@ -27,7 +27,7 @@ Update [config/config.yaml](config/config.yaml) before running:
 
 ```yaml
 org: "psrc"
-lookback_months: 18
+lookback_months: 24
 excluded_users:
   - "dependabot[bot]"
   - "github-actions[bot]"
@@ -46,25 +46,31 @@ ignored_activity_title_patterns:
 
 Repositories that are archived are skipped. Forks are also skipped by default.
 
-For inactivity checks, the default configuration ignores governance-only activity tied to CODEOWNERS rollouts:
-
-- merged PRs whose title or body matches `codeowners`
-- commits and PRs whose changed files are only `.github/CODEOWNERS`
-
-That keeps a bulk CODEOWNERS backfill from making dormant repositories look active. You can widen or narrow the filters with `ignored_activity_paths` and `ignored_activity_title_patterns`.
+For inactivity checks, the default configuration ignores governance-only activity tied to `.github/CODEOWNERS` rollouts. That keeps a bulk CODEOWNERS backfill from making dormant repositories look active. You can widen or narrow the filters with `ignored_activity_paths` and `ignored_activity_title_patterns`.
 
 ## Authentication
 
 Set a `GH_TOKEN` secret at the repository or organization level.
 
-For organization-wide access, the token should be able to:
+The script passes `GH_TOKEN` explicitly to the R `gh` client.
 
-- read organization members (`read:org`)
-- read and write repository contents
-- read pull requests and commits
-- create issues
+Classic PAT requirements:
 
-For private repositories, a classic PAT with `repo` and `read:org` scopes is the simplest option. A GitHub App or fine-grained token also works if it has equivalent permissions.
+- `repo` for private repository contents, commits, pull requests, issues, and assignee checks
+- `read:org` to read organization members
+
+Fine-grained PAT requirements:
+
+- organization permission `Members: Read-only`
+- repository permission `Contents: Read and write`
+- repository permission `Pull requests: Read-only`
+- repository permission `Issues: Read and write`
+
+For a fine-grained PAT, grant access to every repository the workflow should scan.
+
+Known caveat with fine-grained PATs:
+
+- This script uses `/orgs/{org}/members` as the authoritative source for organization membership because `/user/memberships/orgs` and `/user/memberships/orgs/{org}` can be empty or inconsistent with fine-grained PATs.
 
 ## GitHub Actions
 
@@ -120,4 +126,5 @@ After pushing this repository to GitHub:
 - When `require_org_membership` is `true`, contributors who are not organization members are excluded from CODEOWNERS selection.
 - If all contributors are excluded by membership filtering, the repository is skipped and a warning is logged.
 - Inactivity checks ignore CODEOWNERS-only commits and merged PRs by default.
+- Inactivity issues mention all CODEOWNERS entries and assign any individual CODEOWNERS users who are valid assignees on that repository. Team CODEOWNERS are mentioned but not assigned.
 - Duplicate inactivity issues are avoided by checking for an existing open issue with the same title.

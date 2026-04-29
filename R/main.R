@@ -1,6 +1,11 @@
 script_arg <- grep("^--file=", commandArgs(), value = TRUE)
 script_path <- if (length(script_arg) == 0) normalizePath("R/main.R") else normalizePath(sub("^--file=", "", script_arg[[1]]))
-project_root <- dirname(dirname(script_path))
+project_root_override <- getOption("github_housekeeping_project_root", default = "")
+project_root <- if (nzchar(project_root_override)) {
+  normalizePath(project_root_override)
+} else {
+  dirname(dirname(script_path))
+}
 
 source(file.path(project_root, "R", "github_utils.R"))
 source(file.path(project_root, "R", "assign_codeowners.R"))
@@ -9,12 +14,34 @@ source(file.path(project_root, "R", "check_inactive_repos.R"))
 run_governance <- function(config_path, dry_run = FALSE) {
   require_github_token()
 
-  resolved_config_path <- if (grepl("^([A-Za-z]:|/)", config_path)) config_path else file.path(project_root, config_path)
+  resolved_config_path <- if (grepl("^([A-Za-z]:|/)", config_path)) {
+    config_path
+  } else {
+    config_candidates <- c(
+      file.path(project_root, config_path),
+      file.path(project_root, "config", config_path)
+    )
+    config_candidates <- unique(config_candidates)
+
+    existing_candidate <- config_candidates[file.exists(config_candidates)][[1]]
+    existing_candidate %||% config_candidates[[1]]
+  }
   config <- read_config(resolved_config_path)
 
   log_info("Loading organization members for", config$org)
   org_members <- list_org_members(config$org)
   log_info("Loaded", length(org_members), "organization members")
+  if (length(org_members) == 0 && isTRUE(config$require_org_membership)) {
+    log_warn(
+      "No organization members were returned for",
+      config$org,
+      "with require_org_membership=true.",
+      "Check that GH_TOKEN has organization member read access",
+      "(for example read:org on a classic PAT),",
+      "and that the token is authorized for the organization if SSO is required.",
+      "/orgs/{org}/members is the script's authoritative membership source."
+    )
+  }
 
   repos <- list_org_repositories(config$org, include_forks = config$include_forks)
   total_repos <- length(repos)
@@ -73,6 +100,7 @@ run_governance <- function(config_path, dry_run = FALSE) {
           return(invisible(NULL))
         }
 
+        log_warn("Repository scan failed for", slug, ":", conditionMessage(error))
         unexpected_error_count <<- unexpected_error_count + 1
       }
     )

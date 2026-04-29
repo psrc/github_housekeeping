@@ -85,19 +85,72 @@ is_empty_repo_error <- function(error) {
   grepl("409", message_text, fixed = TRUE) && grepl("Git Repository is empty", message_text, fixed = TRUE)
 }
 
+is_forbidden_pat_error <- function(error) {
+  message_text <- conditionMessage(error)
+  grepl("403", message_text, fixed = TRUE) &&
+    grepl("Resource not accessible by personal access token", message_text, fixed = TRUE)
+}
+
+format_github_request_context <- function(request_args) {
+  context_fields <- c("owner", "repo", "path", "ref", "pull_number", "assignee", "branch")
+  context_values <- request_args[intersect(names(request_args), context_fields)]
+
+  if (length(context_values) == 0) {
+    return("")
+  }
+
+  context_values <- Filter(function(value) !is.null(value) && length(value) > 0 && nzchar(as.character(value[[1]])), context_values)
+
+  if (length(context_values) == 0) {
+    return("")
+  }
+
+  paste(
+    vapply(
+      names(context_values),
+      function(name) sprintf("%s=%s", name, as.character(context_values[[name]][[1]])),
+      character(1)
+    ),
+    collapse = ", "
+  )
+}
+
+stop_github_api_error <- function(error, endpoint, method, request_args) {
+  request_context <- format_github_request_context(request_args)
+  context_text <- if (nzchar(request_context)) sprintf(" [%s]", request_context) else ""
+
+  stop(simpleError(sprintf(
+    "GitHub API %s %s failed%s: %s",
+    method,
+    endpoint,
+    context_text,
+    conditionMessage(error)
+  )))
+}
+
 gh_api <- function(endpoint, ..., .method = "GET", .max_tries = 4) {
   attempt <- 1
+  request_args <- list(...)
+  token <- Sys.getenv("GH_TOKEN", unset = "")
 
   repeat {
-    response <- tryCatch(
-      gh::gh(
-        endpoint,
-        ...,
+    gh_call_args <- c(
+      list(endpoint),
+      request_args,
+      list(
         .method = .method,
-        .send_headers = c(Accept = "application/vnd.github+json")
-      ),
-      error = identity
+        .send_headers = c(
+          Accept = "application/vnd.github+json",
+          `X-GitHub-Api-Version` = "2026-03-10"
+        )
+      )
     )
+
+    if (nzchar(token)) {
+      gh_call_args$.token <- token
+    }
+
+    response <- tryCatch(do.call(gh::gh, gh_call_args), error = identity)
 
     if (!inherits(response, "error")) {
       return(response)
@@ -105,20 +158,34 @@ gh_api <- function(endpoint, ..., .method = "GET", .max_tries = 4) {
 
     # 404s are not transient (missing file/repo or insufficient access). Don't retry.
     if (is_not_found_error(response)) {
-      stop(response)
+      stop_github_api_error(response, endpoint, .method, request_args)
     }
 
     # Empty repos (409) are not transient. Don't retry.
     if (is_empty_repo_error(response)) {
-      stop(response)
+      stop_github_api_error(response, endpoint, .method, request_args)
+    }
+
+    # PAT authorization failures are permission/model issues, not transient API errors.
+    if (is_forbidden_pat_error(response)) {
+      stop_github_api_error(response, endpoint, .method, request_args)
     }
 
     if (attempt >= .max_tries) {
-      stop(response)
+      stop_github_api_error(response, endpoint, .method, request_args)
     }
 
     wait_seconds <- 2 ^ (attempt - 1)
-    log_warn("GitHub API call failed, retrying in", wait_seconds, "seconds:", conditionMessage(response))
+    log_warn(
+      "GitHub API call failed for",
+      .method,
+      endpoint,
+      if (nzchar(format_github_request_context(request_args))) sprintf("[%s]", format_github_request_context(request_args)) else "",
+      "retrying in",
+      wait_seconds,
+      "seconds:",
+      conditionMessage(response)
+    )
     Sys.sleep(wait_seconds)
     attempt <- attempt + 1
   }
@@ -361,9 +428,65 @@ find_open_issue_by_title <- function(owner, repo, title) {
   matching[[1]]
 }
 
-create_issue <- function(owner, repo, title, body, dry_run = FALSE) {
+is_assignable_user <- function(owner, repo, username) {
+  tryCatch(
+    {
+      gh_api(
+        "/repos/{owner}/{repo}/assignees/{assignee}",
+        owner = owner,
+        repo = repo,
+        assignee = username
+      )
+
+      TRUE
+    },
+    error = function(error) {
+      if (is_not_found_error(error)) {
+        return(FALSE)
+      }
+
+      stop(error)
+    }
+  )
+}
+
+filter_assignable_assignees <- function(owner, repo, users) {
+  candidate_users <- unique(users %||% character())
+  candidate_users <- candidate_users[nzchar(candidate_users)]
+  candidate_users <- candidate_users[!grepl("/", candidate_users, fixed = TRUE)]
+
+  if (length(candidate_users) == 0) {
+    return(character())
+  }
+
+  assignable <- vapply(
+    candidate_users,
+    function(username) is_assignable_user(owner, repo, username),
+    logical(1)
+  )
+
+  candidate_users[assignable]
+}
+
+create_issue <- function(owner, repo, title, body, assignees = character(), dry_run = FALSE) {
   if (dry_run) {
     return(invisible(NULL))
+  }
+
+  assignees <- unique(assignees %||% character())
+  assignees <- assignees[nzchar(assignees)]
+
+  if (length(assignees) == 0) {
+    return(
+      gh_api(
+        "/repos/{owner}/{repo}/issues",
+        owner = owner,
+        repo = repo,
+        title = title,
+        body = body,
+        .method = "POST"
+      )
+    )
   }
 
   gh_api(
@@ -372,6 +495,7 @@ create_issue <- function(owner, repo, title, body, dry_run = FALSE) {
     repo = repo,
     title = title,
     body = body,
+      assignees = I(unname(assignees)),
     .method = "POST"
   )
 }

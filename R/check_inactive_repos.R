@@ -1,4 +1,4 @@
-parse_codeowners_users <- function(codeowners_content) {
+parse_codeowners_owners <- function(codeowners_content) {
   lines <- unlist(strsplit(codeowners_content %||% "", "\n", fixed = TRUE))
   lines <- stringr::str_trim(lines)
   lines <- lines[lines != ""]
@@ -9,10 +9,10 @@ parse_codeowners_users <- function(codeowners_content) {
     return(character())
   }
 
-  usernames <- stringr::str_extract_all(lines, "@[A-Za-z0-9._-]+")
-  usernames <- unlist(usernames, use.names = FALSE)
+  owners <- stringr::str_extract_all(lines, "@[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?")
+  owners <- unlist(owners, use.names = FALSE)
 
-  unique(sub("^@", "", usernames))
+  unique(sub("^@", "", owners))
 }
 
 build_inactivity_issue_body <- function(codeowners, last_commit_date, last_merged_pr_date, lookback_months) {
@@ -38,7 +38,7 @@ flag_inactive_repo <- function(repo_info, config, codeowners_content, dry_run = 
   owner <- repo_info$owner$login
   repo <- repo_info$name
   branch <- repo_info$default_branch
-  codeowners <- parse_codeowners_users(codeowners_content)
+  codeowners <- parse_codeowners_owners(codeowners_content)
 
   if (length(codeowners) == 0) {
     return(list(status = "skipped", reason = "no_codeowners_users"))
@@ -61,6 +61,8 @@ flag_inactive_repo <- function(repo_info, config, codeowners_content, dry_run = 
     return(list(status = "skipped", reason = "existing_issue"))
   }
 
+  assignable_codeowners <- if (dry_run) character() else filter_assignable_assignees(owner, repo, codeowners)
+
   create_issue(
     owner = owner,
     repo = repo,
@@ -71,8 +73,9 @@ flag_inactive_repo <- function(repo_info, config, codeowners_content, dry_run = 
       last_merged_pr_date = last_merged_pr_date,
       lookback_months = config$lookback_months
     ),
+    assignees = assignable_codeowners,
     dry_run = dry_run
   )
 
-  list(status = "flagged", owners = codeowners)
+  list(status = "flagged", owners = codeowners, assignees = assignable_codeowners)
 }
